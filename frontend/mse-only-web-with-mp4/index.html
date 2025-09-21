@@ -9,6 +9,11 @@
         .hidden {
             display: none;
         }
+
+        .error {
+            color: red;
+            margin-top: 10px;
+        }
     </style>
 
 </head>
@@ -17,110 +22,134 @@
     <h1>웹브라우저만으로 mp4 파일 재생</h1>
     <section>
         <video id="video" controls width="600"></video>
+        <div id="errorMessage" class="error hidden"></div>
     </section>
     <section>
         <!-- 버튼을 추가하고 버튼을 눌렀을 때 mp4 파일을 선택할 수 있는 파일 다이얼로그를 띄운다.-->
         <button id="openFileBtn">MP4 파일 선택</button>
         <input type="file" id="fileInput" accept="video/mp4" class="hidden" />
     </section>
-    <script>const video = document.getElementById('video');
-        const openFileBtn = document.getElementById('openFileBtn');
-        const fileInput = document.getElementById('fileInput');
+    <script>
+        let currentVideoUrl = null;
 
-        openFileBtn.addEventListener('click', () => {
-            fileInput.click();
-        });
+        function playVideo(videoElement, file) {
+            const url = URL.createObjectURL(file);
+            videoElement.src = url;
+            videoElement.play().catch(() => {
+                console.error('Error playing video');
+                alert('Error playing video');
+            });
+            return url;
+        }
 
-        fileInput.addEventListener('change', (event) => {
-            const file = event.target.files && event.target.files[0];
-            if (!file) return;
+        function showError(message) {
+            const errorMessage = document.getElementById('errorMessage');
+            errorMessage.textContent = message;
+            errorMessage.classList.remove('hidden');
+        }
 
-            if (!file.type || !file.type.startsWith('video/mp4')) {
-                // mp4가 아니면 직접 URL로 재생 시도
-                video.src = URL.createObjectURL(file);
+        function clearError() {
+            const errDiv = document.getElementById('errorMessage');
+            errorMessage.classList.add('hidden');
+        }
 
-                video.play().catch(() => { });
+        function playVideoDirectly(videoElement, file) {
+            if (currentVideoUrl) {
+                URL.revokeObjectURL(currentVideoUrl);
+            }
+            currentVideoUrl = URL.createObjectURL(file);
+            videoElement.src = currentVideoUrl;
+            videoElement.play().catch(() => {
+                console.error('Error playing video');
+                showError('Error playing video');
+            });
+        }
+
+        async function playVideoWithMSE(videoElement, file) {
+            const codecs = 'video/mp4; codecs="avc1.42E01E, mp4a.40.2"';
+            if (!window.MediaSource || !MediaSource.isTypeSupported(codecs)) {
+                console.warn('MediaSource or specified codecs are not supported.');
+                playVideoDirectly(videoElement, file);
                 return;
             }
 
-            const codecs = 'video/mp4; codecs="avc1.42E01E, mp4a.40.2"';
+            try {
+                const mediaSource = new MediaSource();
+                if (currentVideoUrl) {
+                    URL.revokeObjectURL(currentVideoUrl);
+                }
+                currentVideoUrl = URL.createObjectURL(mediaSource);
+                videoElement.src = currentVideoUrl;
 
-            if (window.MediaSource && MediaSource.isTypeSupported(codecs)) {
-                try {
-                    const mediaSource = new MediaSource();
-                    video.src = URL.createObjectURL(mediaSource);
-
-                    mediaSource.addEventListener('sourceopen', async () => {
+                mediaSource.addEventListener('sourceopen', async () => {
+                    try {
                         const sourceBuffer = mediaSource.addSourceBuffer(codecs);
-
                         const arrayBuffer = await file.arrayBuffer();
 
                         sourceBuffer.addEventListener('error', (e) => {
                             console.error('SourceBuffer error:', e);
-                            // SourceBuffer 사용 중 오류가 발생하면 직접 URL로 재생 시도
-                            URL.revokeObjectURL(video.src);
-                            video.src = URL.createObjectURL(file);
-
-                            video.play().catch(() => { });
-                        }
-
-                            , {
-                                once: true
-                            });
+                            showError('SourceBuffer error occurred.');
+                            playVideoDirectly(videoElement, file);
+                        }, { once: true });
 
                         sourceBuffer.addEventListener('updateend', () => {
                             try {
                                 if (mediaSource.readyState === 'open') {
                                     mediaSource.endOfStream();
                                 }
-
-                                video.play().catch(() => { });
-                            }
-
-                            catch (e) {
+                                videoElement.play().catch(() => {
+                                    console.error('Error playing video');
+                                    showError('Error playing video');
+                                });
+                            } catch (e) {
                                 console.error('Error during endOfStream or play:', e);
+                                showError('Error during endOfStream or play.');
+                                playVideoDirectly(videoElement, file);
                             }
-                        }
-
-                            , {
-                                once: true
-                            });
-
-                        try {
-                            sourceBuffer.appendBuffer(arrayBuffer);
-                        }
-
-                        catch (e) {
-                            console.error('Error appending buffer:', e);
-                            // appendBuffer 중 오류가 발생하면 직접 URL로 재생 시도
-                            URL.revokeObjectURL(video.src);
-                            video.src = URL.createObjectURL(file);
-
-                            video.play().catch(() => { });
-                        }
+                        }, { once: true });
+                        sourceBuffer.appendBuffer(arrayBuffer);
+                    } catch (e) {
+                        console.error('Error reading or appending buffer:', e);
+                        showError('Error reading or appending buffer.');
+                        playVideoDirectly(videoElement, file);
                     }
+                }, { once: true });
+            } catch (e) {
+                console.error('Error clearing error message:', e);
+                showError('Error initializing MediaSource.');
+                playVideoDirectly(videoElement, file);
+            }
+        }
 
-                        , {
-                            once: true
-                        });
+        function initialize() {
+            const video = document.getElementById('video');
+            const openFileBtn = document.getElementById('openFileBtn');
+            const fileInput = document.getElementById('fileInput');
+
+            openFileBtn.addEventListener('click', () => {
+                fileInput.click();
+            });
+
+            fileInput.addEventListener('change', async (event) => {
+                const file = event.target.files?.[0];
+                if (!file) return;
+                clearError();
+
+                if (!file.type.startsWith('video/mp4')) {
+                    showError('Selected file is not an MP4 video.');
+                    return;
                 }
 
-                catch (e) {
-                    console.error('MediaSource error:', e);
-                    // MediaSource 사용 중 오류가 발생하면 직접 URL로 재생 시도
-                    video.src = URL.createObjectURL(file);
-
-                    video.play().catch(() => { });
+                if (file.size > 200 * 1024 * 1024) { // 100MB 제한
+                    showError('File size exceeds 100MB limit.');
+                    return;
                 }
-            }
 
-            else {
-                // MediaSource가 지원되지 않으면 직접 URL로 재생 시도
-                video.src = URL.createObjectURL(file);
+                await playVideoWithMSE(video, file);
+            });
+        }
 
-                video.play().catch(() => { });
-            }
-        });
+        document.addEventListener('DOMContentLoaded', initialize);
     </script>
 </body>
 
