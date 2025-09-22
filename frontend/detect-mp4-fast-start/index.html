@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document</title>
+</head>
+
+<body>
+    <input id="fileInput" type="file" accept="video/mp4" />
+    <div id="fileInfo" aria-live="polite"></div>
+
+    <script>
+        document.addEventListener("DOMContentLoaded", () => {
+            const fileInput = document.getElementById('fileInput');
+            const fileInfo = document.getElementById('fileInfo');
+
+            fileInput.addEventListener('change', async (event) => {
+                const file = event.target.files?.[0];
+                if (!file) {
+                    fileInfo.textContent = 'No file selected';
+                    return;
+                }
+                const sizeKB = Math.round(file.size / 1024);
+                fileInfo.textContent = `Selected file: ${file.name}, size: ${sizeKB} KB`;
+
+                console.log('Selected file:', file);
+                try {
+                    const isFast = await isFastStart(file);
+                    if (isFast === true) {
+                        fileInfo.textContent += ' — fast start (moov before mdat)';
+                    } else if (isFast === false) {
+                        fileInfo.textContent += ' — not fast start (moov after mdat)';
+                    } else {
+                        fileInfo.textContent += ' — unknown (scanning limit reached or parsing failed)';
+                    }
+                } catch (e) {
+                    console.error('Error checking fast start:', e);
+                    fileInfo.textContent += ' — error checking fast start';
+                }
+            });
+        });
+
+        async function isFastStart(file) {
+            const fileSize = file.size;
+            const maxScanBytes = Math.min(fileSize, 1024 * 1024); // 최대 1MB까지 검사
+            let pos = 0;
+
+            async function readSlice(start, length) {
+                const end = Math.min(start + length, fileSize);
+                return await file.slice(start, end).arrayBuffer();
+            }
+
+            while (pos + 8 <= maxScanBytes) {
+                const headerBuf = await readSlice(pos, 8);
+                if (headerBuf.byteLength < 8) {
+                    break; // 더 이상 읽을 수 없음
+                }
+                const dv = new DataView(headerBuf);
+                const size32 = dv.getUint32(0, false);
+                const type = String.fromCharCode(
+                    dv.getUint8(4),
+                    dv.getUint8(5),
+                    dv.getUint8(6),
+                    dv.getUint8(7)
+                );
+                console.log(`Found box: ${type} at ${pos}, size: ${size32}`);
+
+                let atomSize = size32;
+                let headerLen = 8;
+
+                if (atomSize === 1) {
+                    // 64-bit 크기
+                    const extBuf = await readSlice(pos + 8, 8);
+                    if (extBuf.byteLength < 8) {
+                        return null;
+                    }
+                    const extDv = new DataView(extBuf);
+                    const high = extDv.getUint32(0, false);
+                    const low = extDv.getUint32(4, false);
+                    atomSize = high * 2 ** 32 + low;
+                    headerLen = 16;
+                } else if (atomSize === 0) {
+                    atomSize = fileSize - pos; // 파일 끝까지
+                }
+
+                if (type === 'moov') {
+                    return true; // moov 박스가 앞에 있음
+                } else if (type === 'mdat') {
+                    return false; // mdat 박스가 앞에 있음
+                }
+
+                if (atomSize < headerLen) {
+                    break; // 잘못된 크기
+                }
+
+                pos += atomSize;
+
+                if (pos >= maxScanBytes) {
+                    break; // 최대 검사 바이트 초과
+                }
+            }
+            return null;
+        }
+    </script>
+</body>
+
+</html>
