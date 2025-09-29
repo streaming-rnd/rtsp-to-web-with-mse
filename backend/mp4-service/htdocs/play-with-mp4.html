@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="ko">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MP4 서비스로부터 스트림 재생</title>
+    <style>
+        .hidden {
+            display: none;
+        }
+
+        .error {
+            color: red;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>MP4 서비스로부터 스트림 재생</h1>
+    <section>
+        <video id="video" controls width="600" muted></video>
+        <div id="errorMessage" class="error hidden"></div>
+    </section>
+    <section>
+        <input type="text" id="filenameInput" placeholder="MP4 파일명 입력 (예: sample.mp4)" />
+        <button id="playBtn">재생</button>
+    </section>
+    <script>
+        let currentVideoUrl = null;
+
+        function showError(message) {
+            const errorMessage = document.getElementById('errorMessage');
+            errorMessage.textContent = message;
+            errorMessage.classList.remove('hidden');
+        }
+
+        function clearError() {
+            const errorMessage = document.getElementById('errorMessage');
+            errorMessage.classList.add('hidden');
+        }
+
+        /**
+         * 지정된 시간(ms)만큼 실행을 지연시키는 Promise를 반환합니다.
+         * @param {number} ms - 지연시킬 시간 (밀리초 단위)
+         */
+        function delay(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+
+        async function playVideoWithMSE(videoElement, filename) {
+            const codecs = 'video/mp4; codecs="avc1.42E01E, mp4a.40.2"';
+            if (!window.MediaSource || !MediaSource.isTypeSupported(codecs)) {
+                console.warn('MediaSource or specified codecs are not supported.');
+                showError('MediaSource가 지원되지 않습니다.');
+                return;
+            }
+
+            if (currentVideoUrl) {
+                URL.revokeObjectURL(currentVideoUrl);
+            }
+
+            videoElement.pause();
+            videoElement.removeAttribute('src');
+
+            const mediaSource = new MediaSource();
+            currentVideoUrl = URL.createObjectURL(mediaSource);
+            videoElement.src = currentVideoUrl;
+
+            mediaSource.addEventListener('sourceopen', async () => {
+                try {
+                    const sourceBuffer = mediaSource.addSourceBuffer(codecs);
+
+                    // 백엔드에서 스트림 요청
+                    const response = await fetch(`/mp4/${filename}`);
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    const reader = response.body.getReader();
+
+                    const BUFFER_GOAL_SECONDS = 30; // 최소 30초 버퍼 유지
+                    const MAX_BUFFER_SECONDS = 60; // 버퍼가 60초 넘으면 정리 시작
+                    const CLEANUP_SECONDS = 10; // 정리 시 현재 시간 이전 30초까지 삭제
+
+                    let isStreamEnded = false;
+
+                    sourceBuffer.addEventListener('error', (e) => {
+                        console.error('SourceBuffer error:', e);
+                        showError('SourceBuffer 오류 발생.');
+                    });
+
+                    const onUpdateEnd = async () => {
+                        console.log("onUpdateEnd");
+                        const buffered = sourceBuffer.buffered;
+                        if (buffered.length > 0) {
+                            const currentBufferEnd = buffered.end(0);
+                            const bufferedAmount = currentBufferEnd - videoElement.currentTime;
+                            console.log({ bufferedAmount });
+
+                            if (bufferedAmount > MAX_BUFFER_SECONDS) {
+                                const removeEnd = videoElement.currentTime - CLEANUP_SECONDS;
+                                const removeStart = sourceBuffer.buffered.start(0);
+                                console.log({ removeStart, removeEnd, currentTime: videoElement.currentTime });
+                                if (removeEnd > removeStart) {
+                                    console.log(`버퍼가 ${bufferedAmount.toFixed(1)}초로 너무 많아 정리합니다.`);
+                                    sourceBuffer.remove(removeStart, removeEnd);
+                                    // remove를 호출했으므로, 이번 사이클은 여기서 종료
+                                    return;
+                                }
+                            }
+                        }
+
+                        if (!isStreamEnded && sourceBuffer.buffered.length > 0) {
+                            const bufferedAmount = sourceBuffer.buffered.end(0) - videoElement.currentTime;
+                            if (bufferedAmount > BUFFER_GOAL_SECONDS) {
+                                const excessBuffer = bufferedAmount - BUFFER_GOAL_SECONDS;
+                                const dynamicDelay = Math.min(10000, Math.max(1000, excessBuffer * 1000)); // 1초 ~ 10초 사이
+                                console.log(`버퍼가 ${bufferedAmount.toFixed(1)}초로 충분하여 ${dynamicDelay}ms 대기합니다.`);
+                                await delay(dynamicDelay);
+                                console.log({ end: sourceBuffer.buffered.end(0), current: videoElement.currentTime })
+                                // 대기 후, 다음 작업을 위해 수동으로 fetchAndAppend 호출
+                                fetchAndAppend();
+                                return;
+                            }
+                        }
+
+                        // 스트림이 끝났다면 모든 작업을 종료
+                        if (isStreamEnded) {
+                            if (mediaSource.readyState === "open" && !sourceBuffer.updating) {
+                                mediaSource.endOfStream();
+                            }
+                            return;
+                        }
+
+                        // 버퍼가 부족하면 다음 청크 가져오기
+                        fetchAndAppend();
+                    }
+
+                    sourceBuffer.addEventListener('updateend', onUpdateEnd);
+
+                    const fetchAndAppend = async () => {
+                        if (sourceBuffer.updating || isStreamEnded) {
+                            console.log("not ready");
+                            return;
+                        }
+                        try {
+                            const { done, value } = await reader.read();
+                            if (done) {
+                                isStreamEnded = true;
+                                onUpdateEnd();
+                                return;
+                            }
+                            sourceBuffer.appendBuffer(value);
+                        } catch (e) {
+                            console.error('Error reading or appending chunk:', e);
+                            showError('청크 읽기 또는 추가 오류.');
+                        }
+                    }
+
+                    // 스트리밍 시작점
+                    fetchAndAppend();
+                    videoElement.play().catch(e => {
+                        console.error("Video play failed:", e);
+                        showError("비디오 재생 실패: 브라우저 정책에 의해 자동 재생이 차단되었을 수 있습니다.");
+                    });
+                } catch (e) {
+                    console.error('Error:', e);
+                    showError('오류 발생: ' + e.message);
+                }
+            }, { once: true });
+        }
+
+        function initialize() {
+            const video = document.getElementById('video');
+            const playBtn = document.getElementById('playBtn');
+            const filenameInput = document.getElementById('filenameInput');
+
+            playBtn.addEventListener('click', async () => {
+                const filename = filenameInput.value.trim();
+                if (!filename) {
+                    showError('파일명을 입력하세요.');
+                    return;
+                }
+                clearError();
+                await playVideoWithMSE(video, filename);
+            });
+        }
+
+        document.addEventListener('DOMContentLoaded', initialize);
+    </script>
+</body>
+
+</html>
