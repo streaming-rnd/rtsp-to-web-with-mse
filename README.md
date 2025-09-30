@@ -4,16 +4,10 @@
 주요 목적은 Media Source Extensions(MSE)를 이용한 스트리밍/버퍼 관리와, MP4 파일이 "fast start" (moov가 mdat보다 앞에 위치)인지 검사하는 도구를 제공하는 것입니다.
 
 디렉터리 구성(주요 항목)
-- frontend/detect-mp4-fast-start/index.html  
-  - 로컬 MP4 파일을 선택해 moov/mdat 박스 순서를 검사하여 fast-start 여부를 판단합니다.
-  - 대용량 파일의 전체를 읽지 않고 최대 1MB(기본)만 스캔합니다(설정 가능).
-  - 사용법: 페이지 열기 → 파일 선택 → 결과 표시( fast start / not fast start / unknown ).
-- frontend/mse-only-web-with-mp4/index.html  
-  - MSE를 사용해 (가능하면) MP4를 append 후 재생 시도. MSE 미지원 또는 실패 시 URL.createObjectURL로 폴백합니다.
-- frontend/using-stream-play/index.html  
-  - File.stream()을 이용해 chunk 단위로 SourceBuffer에 append하면서 버퍼를 관리하는 스트리밍 예제입니다.
-  - QuotaExceededError 발생 시 300ms 대기 후 재시도하는 로직이 포함되어 있습니다.
-  - 버퍼가 일정량(예: 60초)을 초과하면 앞부분을 remove 하도록 되어 있습니다.
+- [MP4 파일의 Fast Start 포맷 검증 및 웹 스트리밍에 적합한 파일 제공 기능](backend/mp4-service/README.md)
+- [로컬 MP4 파일의 fast-start 여부 검사 도구](frontend/detect-mp4-fast-start/docs/README.md) 
+- [MSE를 활용한 MP4 스트리밍 재생 예제](frontend/mse-only-web-with-mp4/docs/README.md) 
+- [File.stream()을 이용한 chunk 단위 스트리밍 및 버퍼 관리 예제](frontend/using-stream-play/docs/README.md)
 
 사용 방법 (권장: 로컬 서버에서 실행)
 브라우저의 보안 제한 때문에 간단히 파일을 열어도 동작하나, 로컬 서버에서 열면 더 일관된 동작을 확인할 수 있습니다.
